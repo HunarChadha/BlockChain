@@ -2,6 +2,7 @@ import argparse #Lets user pass arguments from the terminal
 import secrets #Generates random values suitable for security-related purposes, such as cryptographic keys.
 import trio
 from multiaddr import Multiaddr
+import json
 
 from libp2p import new_host #A host is the networking component representing your local peer
 from libp2p.crypto.secp256k1 import create_new_key_pair #cryptographic key pair using the secp256k1 elliptic curve, a key pair contains: private and public key
@@ -36,7 +37,22 @@ async def echo_stream_handler(stream: INetStream) -> None: #stream is the channe
             while b"\n" in buffer: #lets the handler process multiple complete messages, even if they arrive together, separated by delimiter "\n"
                 message, buffer = buffer.split(b"\n", 1) #separates the first complete message from the remaining bytes.
 
-                print(f"Received: {message.decode('utf-8')}")
+                text = message.decode("utf-8")
+                try:
+                    data = json.loads(text)
+                    if data.get("type") == "transaction":
+                         transaction = data.get("transaction")
+                         if not isinstance(transaction, dict):
+                             print("Rejected: transaction must be a JSON object.")
+                         elif not all(key in transaction for key in ("from", "to", "amount", "nonce")):
+                             print("Rejected: transaction is missing required fields.")
+                         else:
+                             print(f"Received transaction: {transaction}")
+                    else:
+                        print(f"Received JSON: {data}")
+                except json.JSONDecodeError:
+                    print(f"Received text: {text}")
+                    #now it can distinguish a transaction message from other json messages.
 
                 await stream.write(message + b"\n") #sends the same bytes to the sender
                 #This is called an echo handler because it repeats the received message to whoever sent it.
@@ -50,19 +66,26 @@ async def echo_stream_handler(stream: INetStream) -> None: #stream is the channe
     finally:
         await stream.close()
 
-#runs on the sending side. It reads the reply and figures out when the complete message has arrived.
-async def read_line(stream: INetStream) -> bytes:
-    buffer = b""
 
-    while not buffer.endswith(b"\n"):
-        chunk = await stream.read(1) #asks the stream to return up to one byte, Because we want to check the incoming data one byte at a time until we encounter the newline.
+
+#runs on the sending side. It reads the reply and figures out when the complete message has arrived.
+async def read_line(stream: INetStream, buffer: bytearray) -> bytes: #bytearray is a mutable collection of bytes, so we can add and remove data without creating a new buffer every time.
+    while b"\n" not in buffer:
+        chunk = await stream.read(1024) 
 
         if not chunk:
             break
 
-        buffer +=chunk
+        buffer.extend(chunk) #stores incoming data
 
-    return buffer
+    if b"\n" not in buffer:
+        return b""
+
+    newline_index = buffer.index(b"\n") #finds the position of first new line
+    message = bytes(buffer[:newline_index]) #selects everything from the beginning of the buffer up to, but not including, the newline.
+    del buffer[:newline_index + 1] #removes the message we just read, including its newline, while preserving any additional data already received.
+
+    return message #gives the caller one complete message without its newline.
         
 
 
@@ -96,6 +119,8 @@ async def main(port: int, peer_address: str | None):
             stream = await host.new_stream(peer_info.peer_id, [PROTOCOL_ID]) #opens a stream over which we can exchange application data.
 
             #Sends and receives messages
+            buffer = bytearray()
+
             try:
                 while True:
                     message_text = input("Enter your message (or 'quit' to exit): ")
@@ -103,15 +128,21 @@ async def main(port: int, peer_address: str | None):
                     if message_text.lower() == "quit":
                         break
 
-                    message = message_text.encode("utf-8") + b"\n"
+                    message = message_text.encode("utf-8") + b"\n" #marks the end of the message.
                     await stream.write(message)
-
-                    response = await read_line(stream=stream)
-                    print(f"Sent: {message_text}")
-                    print(f"Received reply: {response.decode('utf-8').rstrip()}")
+ 
+                    response = await read_line(stream, buffer) #Reads incoming bytes until it has one complete newline-terminated message, then stores that message in response.
+                    if not response:
+                        print("Other peer has closed the stream.")
+                        break
+                    
+                    print(f"Received reply: {response.decode('utf-8')}")
 
             finally:
                 await stream.close()
+
+            print("Node is staying alive and listening...")
+            await trio.sleep_forever()
         
         else:
             # Display the address another node can use
