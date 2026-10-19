@@ -1,1 +1,4 @@
 .venv
+.idea
+src/Server/ledger_db
+node_modules
