@@ -3,20 +3,13 @@ from rocksdict import Rdict
 db = Rdict("ledger_db")
 
 class DataBase:
-    @staticmethod
-    def enter_data(publicKey, nonce):
-        db[f"acc:{publicKey}"] = {'nonce': nonce}
 
     @staticmethod
-    def update(publicKey):
-        acct = db[f"acc:{publicKey}"]
-        acct['nonce'] += 1
-        db[f"acc:{publicKey}"] = acct
+    def deleteDatabase():
+        for keys in list(db.keys()):
+            del db[keys]
 
-    @staticmethod
-    def fetch_data(publicKey):
-        acct = db[f"acc:{publicKey}"]
-        return acct['nonce']
+        db.flush()
 
     @staticmethod
     def fetchAllData():
@@ -24,5 +17,5 @@ class DataBase:
 
     @staticmethod
     def saveTestData(data:dict):
-        oneTimeAdd, commit, TransKey = data["oneTimeAddress"], data["commit"], data["TransKey"]
-        db[f"add:{oneTimeAdd}"] = {'commit': commit, 'TransKey': TransKey, 'index': 0}
+        add, commit, TransKey, amt, i = data["add"], data["commit"], data["TransKey"], data["amt"], data["i"]
+        db[f"add:{add}"] = {'commit': commit, 'TransKey': TransKey, 'index': 0, 'amt': amt, 'i': i}

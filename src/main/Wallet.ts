@@ -1,89 +1,78 @@
-import {ed25519} from "@noble/curves/ed25519.js";
-import {get, set} from "idb-keyval";
-import {bytesToHex} from "@noble/curves/utils.js";
-import {baseMul, secret, compressedHex, bigIntToBytesLE, pointMul, hashToScalarMulti, compressedBytes, pointAdd} from "./Math";
-import {EdwardsPoint} from "@noble/curves/abstract/edwards.js";
+import { get, set, del } from "idb-keyval";
+import { baseMul, secret, compressedHex, bigIntToBytesLE, bytesToBigIntLE, bytesToHex, hexToBytes, hexToPoint } from "./Math";
 
-const Byte_toHex = (b:Uint8Array<ArrayBuffer>) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-// @ts-ignore
-const Hex_toByte = (h:string) => Uint8Array.from(h.match(/.{2}/g).map((x) => parseInt(x, 16)));
 const enc = new TextEncoder();
 
-async function deriveKey(password:string, salt:Uint8Array<ArrayBuffer>){
-    const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 600000, hash: 'SHA-256' },
+async function deriveKey(password: string, salt: Uint8Array<ArrayBuffer>) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" },
     base,
-    { name: 'AES-GCM', length: 256 },
+    { name: "AES-GCM", length: 256 },
     false,
-    ['encrypt', 'decrypt']
+    ["encrypt", "decrypt"]
   );
 }
 
-async function createWallet(password:string){
-    const viewKeyPriv = secret()
-    const spendKeyPriv = secret()
-    const viewKeyPub = compressedHex(baseMul(viewKeyPriv))
-    const spendKeyPub = compressedHex(baseMul(spendKeyPriv))
+async function createWallet(password: string) {
+  if (await get("wallet")) throw new Error("Wallet already exists");
 
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key =  await deriveKey(password, salt)
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bigIntToBytesLE(spendKeyPriv)));
-    await set('wallet', { viewKeyPub:viewKeyPub, viewKeyPriv:viewKeyPriv, spendKeyPriv:spendKeyPriv, spendKeyPub:spendKeyPub, salt: Byte_toHex(salt), iv: Byte_toHex(iv), ct: Byte_toHex(ct) });
-}
-async function sendInfo(publicKey: Uint8Array<ArrayBufferLike> & Uint8Array<ArrayBuffer>, nonce: number){
-    const API_URL = "http://127.0.0.1:8000";
-    const res = await fetch(`${API_URL}/storeData`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({publicKey: publicKey, nonce: nonce}),
-    });
-    const data = await res.json();
-    console.log(data)
-}
-async function unlockWallet(password:string) {
-  const w = await get('wallet');
-  if (!w) throw new Error('No wallet found');
-  const key = await deriveKey(password, Hex_toByte(w.salt));
-  const spendKeyPriv = new Uint8Array(
-    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Hex_toByte(w.iv) }, key, Hex_toByte(w.ct))
-  );
-  return {spendKeyPriv:spendKeyPriv, viewKeyPriv:w.viewKeyPriv, spendKeyPub: w.spendKeyPub, viewKeyPub:w.viewKeyPub};
+  const viewKeyPriv = secret();
+  const spendKeyPriv = secret();
+  const viewKeyPub = compressedHex(baseMul(viewKeyPriv));
+  const spendKeyPub = compressedHex(baseMul(spendKeyPriv));
 
-}
-function one_time_address(publicviewKey:EdwardsPoint, i:number, spendKeyPublic){
-    const addressOneTime = secret()
-    const E:EdwardsPoint = pointMul(publicviewKey, addressOneTime)
-    const byte = new Uint8Array([i])
-    const hash = hashToScalarMulti(compressedBytes(E), byte)
-    const P = baseMul(hash);
-    return pointAdd(P, spendKeyPublic)
-}
-function deleteWallet(){
-    const DB_NAME = "wallet"
-    const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
-    deleteRequest.onsuccess = function() {
-        console.log(`Database "${DB_NAME}" deleted successfully.`);
-    };
+  // pack both private keys (32 bytes each) into one blob
+  const plain = new Uint8Array(64);
+  plain.set(bigIntToBytesLE(spendKeyPriv), 0);
+  plain.set(bigIntToBytesLE(viewKeyPriv), 32);
 
-    deleteRequest.onerror = function(event) {
-        // @ts-ignore
-        console.error("Error deleting database:", event.target.errorCode);
-    };
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(password, salt);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
+  plain.fill(0);
 
-    deleteRequest.onblocked = function() {
-        console.warn("Deletion blocked! Please close all other tabs open to this site.");
-    };
+  await set("wallet", {
+    spendKeyPub,
+    viewKeyPub,
+    salt: bytesToHex(salt),
+    iv: bytesToHex(iv),
+    ct: bytesToHex(ct),
+  });
+  return { spendKeyPub, viewKeyPub };
 }
-async function sendTrans(signData: { pub: any; sign: string; details: { pub: any; address: string; amount: number; nonce: any; }; }){
-    const API_URL = "http://127.0.0.1:8000";
-    const res = await fetch(`${API_URL}/money`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(signData),
-    });
-    const data = await res.json();
-    console.log(data)
+async function unlockWallet(password: string) {
+  const w = await get("wallet");
+  if (!w) throw new Error("No wallet found");
+
+  const key = await deriveKey(password, hexToBytes(w.salt));
+  let plain: Uint8Array;
+  try {
+    plain = new Uint8Array(
+      await crypto.subtle.decrypt({ name: "AES-GCM", iv: hexToBytes(w.iv) }, key, hexToBytes(w.ct))
+    );
+  } catch {
+    throw new Error("Wrong password");
+  }
+
+  const result = {
+    spendKeyPriv: bytesToBigIntLE(plain.slice(0, 32)),   // bigint
+    viewKeyPriv: bytesToBigIntLE(plain.slice(32, 64)),   // bigint
+    spendKeyPub: hexToPoint(w.spendKeyPub),              // Edwards point
+    viewKeyPub: hexToPoint(w.viewKeyPub),                // Edwards point
+  };
+  console.log(bytesToHex(bigIntToBytesLE(result.spendKeyPriv)))
+  console.log(bytesToHex(bigIntToBytesLE(result.viewKeyPriv)))
+  console.log(compressedHex(result.spendKeyPub))
+  console.log(compressedHex(result.viewKeyPub))
+  plain.fill(0);
+  return result;
 }
-export {unlockWallet, createWallet, deleteWallet, sendTrans}
+
+
+async function deleteWallet() {
+  await del("wallet");
+}
+
+export { unlockWallet, createWallet, deleteWallet };

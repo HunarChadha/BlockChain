@@ -9,12 +9,9 @@ const L = Point.Fn.ORDER; // use ed25519.CURVE.n on v1
 const H = hashToPoint(G.toBytes())
 
 const mod = (a: bigint) => ((a % L) + L) % L;
-const bytesToBigIntLE = (b: Uint8Array) =>
+export const bytesToBigIntLE = (b: Uint8Array) =>
   b.reduceRight((n, byte) => (n << 8n) | BigInt(byte), 0n);
 
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 export function hashToPoint(data: Uint8Array) {
   for (let counter = 0; counter < 256; counter++) {
@@ -65,9 +62,26 @@ export function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   return out;
 }
 
+export function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(hex.length / 2));
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+export function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function hashToScalarMulti(...parts: Uint8Array[]): bigint {
   const data = concat(...parts.map(lenPrefix));            // concat() from the earlier code
   return bytesToBigIntLE(sha256(data)) % L;
+}
+export function hexToPoint(hex: string): EdwardsPoint {
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error('expected 64 hex characters (32 bytes)');
+  }
+  return ed25519.Point.fromHex(hex);   // throws if not a valid curve point
 }
 export const scalarAdd = (a: bigint, b: bigint) => mod(a + b);
 export const scalarMul = (a: bigint, b: bigint) => mod(a * b);
@@ -78,4 +92,4 @@ export const pointMul = (A: typeof G, s: bigint) => A.multiply(s);
 export const compressedHex = (s:EdwardsPoint) => s.toHex();
 export const compressedBytes = (s:EdwardsPoint) => s.toBytes();
 export const HMultiply = (s:bigint) => H.multiply(s)
-export const HexToPoint = (s:string) => ed25519.Point.fromHex(s);
+export const idx = (i: number) => bigIntToBytesLE(BigInt(i), 4);

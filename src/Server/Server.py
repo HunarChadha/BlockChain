@@ -23,6 +23,7 @@ def receive_info(data:dict):
 
 @app.post("/Test")
 def Test1(data:dict):
+    DataBase.deleteDatabase()
     DataBase.saveTestData(data)
     return "saved"
 
